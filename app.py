@@ -1,64 +1,108 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
-import pydeck as pdk
+import folium
+from folium.plugins import Fullscreen
 import json
+
 
 st.set_page_config(
     page_title="Ladywood Dashboard",
     layout="wide"
 )
 
-df = pd.read_excel("Ladywood_Data.xlsx")
 
-df.columns = (
-    df.columns.astype(str)
-    .str.strip()
-    .str.replace(r"\s+", " ", regex=True)
-)
+# =========================================================
+# DATA
+# =========================================================
 
-for col in df.columns:
-    name = col.lower().strip()
+@st.cache_data
+def load_data():
 
-    if name.startswith("runoff q"):
-        df.rename(columns={col: "Runoff Q"}, inplace=True)
+    df = pd.read_excel("Ladywood_Data.xlsx")
 
-    elif name == "c" or name == "runoff c":
-        df.rename(columns={col: "Runoff C"}, inplace=True)
+    df.columns = (
+        df.columns.astype(str)
+        .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
+    )
 
-    elif name.startswith("rainfall"):
-        df.rename(columns={col: "Rainfall mm/h"}, inplace=True)
+    for col in df.columns:
 
+        name = col.lower().strip()
 
-number_cols = [
-    "Flood /10",
-    "Drainage /10",
-    "Population",
-    "Pop /10",
-    "Land Cover /10",
-    "Runoff C",
-    "Rainfall mm/h",
-    "Area ha",
-    "Runoff Q",
-    "Pollution /10",
-    "Priority /10"
-]
+        if name.startswith("runoff q"):
+            df.rename(columns={col: "Runoff Q"}, inplace=True)
 
-for col in number_cols:
-    if col in df.columns:
-        df[col] = (
-            df[col]
-            .astype(str)
-            .str.replace(",", ".", regex=False)
-        )
+        elif name in ["c", "runoff c"]:
+            df.rename(columns={col: "Runoff C"}, inplace=True)
 
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
+        elif name.startswith("rainfall"):
+            df.rename(columns={col: "Rainfall mm/h"}, inplace=True)
 
 
-needed = [
+    number_cols = [
+        "Flood /10",
+        "Drainage /10",
+        "Population",
+        "Pop /10",
+        "Land Cover /10",
+        "Runoff C",
+        "Rainfall mm/h",
+        "Area ha",
+        "Runoff Q",
+        "Pollution /10",
+        "Priority /10"
+    ]
+
+
+    for col in number_cols:
+
+        if col in df.columns:
+
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace(",", ".", regex=False)
+            )
+
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
+
+
+    return df
+
+
+@st.cache_data
+def load_boundary():
+
+    with open(
+        "ladywood_ward.geojson",
+        "r",
+        encoding="utf-8"
+    ) as file:
+
+        boundary = json.load(file)
+
+
+    if boundary.get("type") == "Feature":
+
+        boundary = {
+            "type": "FeatureCollection",
+            "features": [boundary]
+        }
+
+
+    return boundary
+
+
+df = load_data()
+
+
+required_columns = [
     "Site Ref",
     "Area",
     "Location",
@@ -76,16 +120,20 @@ needed = [
     "Proposed SuDS"
 ]
 
+
 missing = [
-    col for col in needed
+    col for col in required_columns
     if col not in df.columns
 ]
 
+
 if missing:
+
     st.error(
-        "Missing columns: "
+        "Missing columns in Ladywood_Data.xlsx: "
         + ", ".join(missing)
     )
+
     st.stop()
 
 
@@ -95,6 +143,10 @@ df["Site"] = (
     + df["Location"].astype(str)
 )
 
+
+# =========================================================
+# FUNCTIONS
+# =========================================================
 
 def priority_level(score):
 
@@ -111,9 +163,31 @@ def priority_level(score):
         return "Low"
 
 
+df["Priority Level"] = (
+    df["Priority /10"]
+    .apply(priority_level)
+)
+
+
+def marker_colour(score):
+
+    if score >= 8:
+        return "red"
+
+    elif score >= 6:
+        return "orange"
+
+    elif score >= 4:
+        return "gold"
+
+    else:
+        return "green"
+
+
 def priority_reasons(row):
 
     reasons = []
+
 
     if row["Flood /10"] >= 8:
         reasons.append(
@@ -208,7 +282,7 @@ def intervention_reasons(row):
     if "blue-green" in proposal:
 
         reasons.append(
-            "Blue-green infrastructure combines storage with green space."
+            "Blue-green infrastructure combines stormwater storage with green space."
         )
 
 
@@ -222,16 +296,79 @@ def intervention_reasons(row):
     return reasons
 
 
+def get_bounds(geojson):
+
+    coordinates = []
+
+
+    def collect(values):
+
+        if (
+            isinstance(values, list)
+            and len(values) >= 2
+            and isinstance(values[0], (int, float))
+            and isinstance(values[1], (int, float))
+        ):
+
+            longitude = values[0]
+            latitude = values[1]
+
+            coordinates.append(
+                [latitude, longitude]
+            )
+
+
+        elif isinstance(values, list):
+
+            for item in values:
+                collect(item)
+
+
+    for feature in geojson["features"]:
+
+        collect(
+            feature["geometry"]["coordinates"]
+        )
+
+
+    latitudes = [
+        point[0]
+        for point in coordinates
+    ]
+
+    longitudes = [
+        point[1]
+        for point in coordinates
+    ]
+
+
+    return [
+        [
+            min(latitudes),
+            min(longitudes)
+        ],
+        [
+            max(latitudes),
+            max(longitudes)
+        ]
+    ]
+
+
+# =========================================================
+# PAGE
+# =========================================================
+
 st.title(
-    "Ladywood Flooding and Pollution Dashboard"
+    "Ladywood Flooding and Pollution Decision-Support Dashboard"
 )
 
 st.caption(
-    "Flood-priority screening and SuDS decision support for Ladywood, Birmingham."
+    "Priority assessment of surface-water flooding, runoff, "
+    "pollution risk and possible SuDS interventions."
 )
 
 
-tab1, tab2, tab3, tab4 = st.tabs(
+overview, assessment, schedule, method = st.tabs(
     [
         "Overview",
         "Location Assessment",
@@ -241,161 +378,491 @@ tab1, tab2, tab3, tab4 = st.tabs(
 )
 
 
+# =========================================================
 # OVERVIEW
+# =========================================================
 
-with tab1:
+with overview:
 
     st.subheader(
         "Project Summary"
     )
 
+
+    high_priority = (
+        df["Priority /10"] >= 6
+    ).sum()
+
+
     c1, c2, c3, c4 = st.columns(4)
 
+
     c1.metric(
-        "Locations",
+        "Locations Assessed",
         len(df)
     )
 
+
     c2.metric(
+        "High Priority Locations",
+        int(high_priority)
+    )
+
+
+    c3.metric(
         "Average Priority",
         f"{df['Priority /10'].mean():.1f}/10"
     )
 
-    c3.metric(
-        "Highest Flood Score",
-        f"{df['Flood /10'].max():.0f}/10"
-    )
 
     c4.metric(
-        "Average Pollution Risk",
-        f"{df['Pollution /10'].mean():.1f}/10"
+        "Highest Priority",
+        f"{df['Priority /10'].max():.1f}/10"
+    )
+
+
+    highest = df.loc[
+        df["Priority /10"].idxmax()
+    ]
+
+
+    st.info(
+        f"Highest current priority: "
+        f"{highest['Location']} — "
+        f"{highest['Priority /10']:.1f}/10."
     )
 
 
     st.divider()
 
 
+    # =====================================================
+    # LADYWOOD MAP
+    # =====================================================
+
     st.subheader(
         "Ladywood Study Area"
     )
 
+
     try:
 
-        with open(
-            "boundaries-constituencies-2024-birmingham.geojson",
-            "r",
-            encoding="utf-8"
-        ) as file:
+        ladywood = load_boundary()
 
-            boundary_data = json.load(file)
+        bounds = get_bounds(
+            ladywood
+        )
 
 
-        ladywood_feature = None
-
-        for feature in boundary_data["features"]:
-
-            if (
-                feature["properties"].get("pcon24nm")
-                == "Birmingham Ladywood"
-            ):
-
-                ladywood_feature = feature
-                break
+        centre_lat = (
+            bounds[0][0]
+            + bounds[1][0]
+        ) / 2
 
 
-        if ladywood_feature is None:
+        centre_lon = (
+            bounds[0][1]
+            + bounds[1][1]
+        ) / 2
 
-            st.error(
-                "Birmingham Ladywood was not found in the boundary file."
+
+        ladywood_map = folium.Map(
+
+            location=[
+                centre_lat,
+                centre_lon
+            ],
+
+            zoom_start=14,
+
+            tiles=None,
+
+            control_scale=True
+        )
+
+
+        # Street map
+        folium.TileLayer(
+            tiles="OpenStreetMap",
+            name="Street Map",
+            show=True
+        ).add_to(
+            ladywood_map
+        )
+
+
+        # Optional lighter background
+        folium.TileLayer(
+            tiles="CartoDB positron",
+            name="Light Map",
+            show=False
+        ).add_to(
+            ladywood_map
+        )
+
+
+        # -------------------------------------------------
+        # LADYWOOD BOUNDARY
+        # -------------------------------------------------
+
+        boundary_group = folium.FeatureGroup(
+            name="Ladywood Boundary",
+            show=True
+        )
+
+
+        folium.GeoJson(
+
+            ladywood,
+
+            name="Ladywood Ward",
+
+            style_function=lambda feature: {
+
+                "fillColor": "#f4a742",
+
+                "color": "#d35400",
+
+                "weight": 6,
+
+                "opacity": 1,
+
+                "fillOpacity": 0.28
+            },
+
+            highlight_function=lambda feature: {
+
+                "fillColor": "#ffcc66",
+
+                "color": "#b03a00",
+
+                "weight": 7,
+
+                "fillOpacity": 0.38
+            },
+
+            tooltip=folium.GeoJsonTooltip(
+
+                fields=[
+                    "name"
+                ],
+
+                aliases=[
+                    "Study area:"
+                ],
+
+                sticky=True
             )
+
+        ).add_to(
+            boundary_group
+        )
+
+
+        boundary_group.add_to(
+            ladywood_map
+        )
+
+
+        # -------------------------------------------------
+        # PERMANENT LADYWOOD LABEL
+        # -------------------------------------------------
+
+        folium.Marker(
+
+            location=[
+                centre_lat,
+                centre_lon
+            ],
+
+            icon=folium.DivIcon(
+                html="""
+                <div style="
+                    font-size:17px;
+                    font-weight:700;
+                    color:#7a3100;
+                    background:white;
+                    border:2px solid #d35400;
+                    border-radius:5px;
+                    padding:5px 9px;
+                    white-space:nowrap;
+                    box-shadow:0 1px 4px rgba(0,0,0,0.35);
+                ">
+                    LADYWOOD WARD
+                </div>
+                """
+            )
+
+        ).add_to(
+            ladywood_map
+        )
+
+
+        # -------------------------------------------------
+        # OPTIONAL SITE MARKERS
+        # -------------------------------------------------
+
+        latitude_col = None
+        longitude_col = None
+
+
+        for col in df.columns:
+
+            if col.lower() in [
+                "latitude",
+                "lat"
+            ]:
+
+                latitude_col = col
+
+
+            if col.lower() in [
+                "longitude",
+                "lon",
+                "lng"
+            ]:
+
+                longitude_col = col
+
+
+        markers_available = False
+
+
+        if (
+            latitude_col is not None
+            and longitude_col is not None
+        ):
+
+            sites = df.copy()
+
+
+            sites[latitude_col] = pd.to_numeric(
+                sites[latitude_col],
+                errors="coerce"
+            )
+
+
+            sites[longitude_col] = pd.to_numeric(
+                sites[longitude_col],
+                errors="coerce"
+            )
+
+
+            sites = sites.dropna(
+                subset=[
+                    latitude_col,
+                    longitude_col
+                ]
+            )
+
+
+            if len(sites) > 0:
+
+                markers_available = True
+
+
+                site_layer = folium.FeatureGroup(
+                    name="Priority Locations",
+                    show=True
+                )
+
+
+                for _, site in sites.iterrows():
+
+                    colour = marker_colour(
+                        site["Priority /10"]
+                    )
+
+
+                    popup_text = (
+
+                        f"<b>{site['Location']}</b><br>"
+
+                        f"Site Ref: {site['Site Ref']}<br>"
+
+                        f"Priority: {site['Priority /10']:.1f}/10<br>"
+
+                        f"Flood Risk: {site['Flood /10']:.0f}/10<br>"
+
+                        f"Pollution Risk: {site['Pollution /10']:.0f}/10<br>"
+
+                        f"Proposed: {site['Proposed SuDS']}"
+                    )
+
+
+                    folium.CircleMarker(
+
+                        location=[
+                            site[latitude_col],
+                            site[longitude_col]
+                        ],
+
+                        radius=7,
+
+                        color=colour,
+
+                        weight=2,
+
+                        fill=True,
+
+                        fill_color=colour,
+
+                        fill_opacity=0.9,
+
+                        tooltip=(
+                            f"{site['Site Ref']} - "
+                            f"{site['Location']}"
+                        ),
+
+                        popup=folium.Popup(
+                            popup_text,
+                            max_width=300
+                        )
+
+                    ).add_to(
+                        site_layer
+                    )
+
+
+                site_layer.add_to(
+                    ladywood_map
+                )
+
+
+        # -------------------------------------------------
+        # MAP LEGEND
+        # -------------------------------------------------
+
+        if markers_available:
+
+            legend = """
+            <div style="
+                position: fixed;
+                bottom: 40px;
+                left: 40px;
+                width: 195px;
+                background-color: white;
+                border: 2px solid #777;
+                z-index: 9999;
+                padding: 11px;
+                font-size: 13px;
+                border-radius: 5px;
+                box-shadow: 0 1px 5px rgba(0,0,0,0.3);
+            ">
+
+            <b>Map Key</b><br><br>
+
+            <span style="
+                display:inline-block;
+                width:22px;
+                border-top:5px solid #d35400;
+            "></span>
+            Ladywood boundary<br><br>
+
+            <b>Priority locations</b><br>
+
+            <span style="color:red;">●</span>
+            Very High<br>
+
+            <span style="color:orange;">●</span>
+            High<br>
+
+            <span style="color:#d4aa00;">●</span>
+            Moderate<br>
+
+            <span style="color:green;">●</span>
+            Low
+
+            </div>
+            """
 
         else:
 
-            ladywood = {
-                "type": "FeatureCollection",
-                "features": [ladywood_feature]
-            }
+            legend = """
+            <div style="
+                position: fixed;
+                bottom: 40px;
+                left: 40px;
+                width: 190px;
+                background-color: white;
+                border: 2px solid #777;
+                z-index: 9999;
+                padding: 11px;
+                font-size: 13px;
+                border-radius: 5px;
+                box-shadow: 0 1px 5px rgba(0,0,0,0.3);
+            ">
+
+            <b>Map Key</b><br><br>
+
+            <span style="
+                display:inline-block;
+                width:24px;
+                height:12px;
+                background:#f4a742;
+                border:3px solid #d35400;
+            "></span>
+
+            &nbsp;Ladywood Ward
+
+            </div>
+            """
 
 
-            centre = ladywood_feature[
-                "properties"
-            ].get(
-                "geo_point_2d",
-                {
-                    "lat": 52.48,
-                    "lon": -1.92
-                }
+        ladywood_map.get_root().html.add_child(
+            folium.Element(
+                legend
             )
+        )
 
 
-            boundary_layer = pdk.Layer(
-                "GeoJsonLayer",
-
-                ladywood,
-
-                stroked=True,
-                filled=True,
-
-                get_fill_color=[
-                    30,
-                    120,
-                    200,
-                    60
-                ],
-
-                get_line_color=[
-                    0,
-                    80,
-                    180
-                ],
-
-                line_width_min_pixels=3,
-
-                pickable=True
-            )
+        # Full screen button
+        Fullscreen(
+            position="topright"
+        ).add_to(
+            ladywood_map
+        )
 
 
-            view = pdk.ViewState(
-                latitude=centre["lat"],
-                longitude=centre["lon"],
-                zoom=11.5
-            )
+        # Layer control
+        folium.LayerControl(
+            collapsed=False
+        ).add_to(
+            ladywood_map
+        )
 
 
-            deck = pdk.Deck(
-                layers=[
-                    boundary_layer
-                ],
-
-                initial_view_state=view,
-
-                map_style=(
-                    "https://basemaps.cartocdn.com/"
-                    "gl/positron-gl-style/style.json"
-                ),
-
-                tooltip={
-                    "text": "Birmingham Ladywood"
-                }
-            )
+        # Fit the whole Ladywood boundary
+        ladywood_map.fit_bounds(
+            bounds,
+            padding=[
+                20,
+                20
+            ]
+        )
 
 
-            st.pydeck_chart(
-                deck,
-                use_container_width=True
-            )
+        components.html(
+
+            ladywood_map.get_root().render(),
+
+            height=620,
+
+            scrolling=False
+        )
 
 
-            st.caption(
-                "Birmingham Ladywood parliamentary constituency boundary, 2024."
-            )
+        st.caption(
+            "Ladywood Ward is outlined and shaded on the street map."
+        )
 
 
     except FileNotFoundError:
 
         st.error(
-            "The Birmingham boundary file is not in the project folder."
+            "ladywood_ward.geojson was not found in the project folder."
         )
+
 
     except Exception as error:
 
@@ -403,11 +870,17 @@ with tab1:
             "The Ladywood map could not be displayed."
         )
 
-        st.write(error)
+        st.write(
+            error
+        )
 
 
     st.divider()
 
+
+    # =====================================================
+    # HIGHEST PRIORITY LOCATIONS
+    # =====================================================
 
     st.subheader(
         "Highest Priority Locations"
@@ -427,27 +900,55 @@ with tab1:
 
 
     priority_fig = px.bar(
+
         top10,
 
         x="Priority /10",
+
         y="Site",
 
         orientation="h",
 
-        hover_data=[
-            "Flood /10",
-            "Drainage /10",
-            "Pollution /10",
-            "Proposed SuDS"
-        ]
+        color="Priority Level",
+
+        color_discrete_map={
+            "Very High": "#d62728",
+            "High": "#ff7f0e",
+            "Moderate": "#e0b000",
+            "Low": "#2ca02c"
+        },
+
+        category_orders={
+            "Priority Level": [
+                "Very High",
+                "High",
+                "Moderate",
+                "Low"
+            ]
+        },
+
+        hover_data={
+            "Priority /10": ":.2f",
+            "Flood /10": True,
+            "Drainage /10": True,
+            "Pollution /10": True,
+            "Proposed SuDS": True,
+            "Priority Level": False
+        }
     )
 
 
     priority_fig.update_layout(
+
         xaxis_title="Priority score /10",
+
         yaxis_title="",
-        height=470
+
+        height=480,
+
+        legend_title="Priority Level"
     )
+
 
     priority_fig.update_xaxes(
         range=[
@@ -464,12 +965,17 @@ with tab1:
 
 
     st.caption(
-        "Higher scores indicate locations requiring greater attention."
+        "Locations are ordered by combined priority. "
+        "Hover over a bar to view the detailed scores."
     )
 
 
     st.divider()
 
+
+    # =====================================================
+    # FLOOD AND POLLUTION
+    # =====================================================
 
     st.subheader(
         "Flood Risk and Pollution Risk"
@@ -477,26 +983,51 @@ with tab1:
 
 
     risk_fig = px.scatter(
+
         df,
 
         x="Flood /10",
+
         y="Pollution /10",
 
         size="Population",
+
+        color="Priority Level",
 
         hover_name="Site",
 
         hover_data=[
             "Priority /10",
             "Proposed SuDS"
-        ]
+        ],
+
+        color_discrete_map={
+            "Very High": "#d62728",
+            "High": "#ff7f0e",
+            "Moderate": "#e0b000",
+            "Low": "#2ca02c"
+        },
+
+        category_orders={
+            "Priority Level": [
+                "Very High",
+                "High",
+                "Moderate",
+                "Low"
+            ]
+        }
     )
 
 
     risk_fig.update_layout(
+
         xaxis_title="Flood risk /10",
+
         yaxis_title="Pollution risk /10",
-        height=430
+
+        height=440,
+
+        legend_title="Priority Level"
     )
 
 
@@ -506,6 +1037,7 @@ with tab1:
             10
         ]
     )
+
 
     risk_fig.update_yaxes(
         range=[
@@ -522,13 +1054,16 @@ with tab1:
 
 
     st.caption(
-        "Upper-right locations combine high flood and pollution risk."
+        "Upper-right locations combine high flood risk "
+        "with high pollution risk. Bubble size represents population."
     )
 
 
+# =========================================================
 # LOCATION ASSESSMENT
+# =========================================================
 
-with tab2:
+with assessment:
 
     st.subheader(
         "Location Assessment"
@@ -542,8 +1077,7 @@ with tab2:
 
 
     row = df[
-        df["Site"]
-        == selected
+        df["Site"] == selected
     ].iloc[0]
 
 
@@ -553,9 +1087,13 @@ with tab2:
 
 
     st.write(
+
         f"**Site Ref:** {row['Site Ref']}  |  "
+
         f"**Area:** {row['Area']}  |  "
+
         f"**Catchment:** {row['Catchment']}  |  "
+
         f"**Flood Zone:** {row['Flood Zone']}"
     )
 
@@ -564,34 +1102,38 @@ with tab2:
 
 
     c1.metric(
-        "Flood",
+        "Flood Risk",
         f"{row['Flood /10']:.0f}/10"
     )
 
+
     c2.metric(
-        "Drainage",
+        "Drainage Risk",
         f"{row['Drainage /10']:.0f}/10"
     )
 
+
     c3.metric(
-        "Population",
+        "Population Exposure",
         f"{row['Pop /10']:.0f}/10"
     )
+
 
     c4.metric(
         "Land Cover",
         f"{row['Land Cover /10']:.0f}/10"
     )
 
+
     c5.metric(
-        "Pollution",
+        "Pollution Risk",
         f"{row['Pollution /10']:.0f}/10"
     )
 
 
     left, right = st.columns(
         [
-            1.4,
+            1.5,
             1
         ]
     )
@@ -599,7 +1141,7 @@ with tab2:
 
     with left:
 
-        factors = pd.DataFrame(
+        site_scores = pd.DataFrame(
             {
                 "Factor": [
                     "Flood",
@@ -620,23 +1162,33 @@ with tab2:
         )
 
 
-        factor_fig = px.bar(
-            factors,
+        site_fig = px.bar(
+
+            site_scores,
 
             x="Factor",
+
             y="Score",
 
-            text_auto=".0f"
+            color="Score",
+
+            color_continuous_scale="YlOrRd"
         )
 
 
-        factor_fig.update_layout(
+        site_fig.update_layout(
+
             xaxis_title="",
+
             yaxis_title="Score /10",
-            height=380
+
+            height=390,
+
+            coloraxis_showscale=False
         )
 
-        factor_fig.update_yaxes(
+
+        site_fig.update_yaxes(
             range=[
                 0,
                 10
@@ -645,7 +1197,7 @@ with tab2:
 
 
         st.plotly_chart(
-            factor_fig,
+            site_fig,
             use_container_width=True
         )
 
@@ -659,13 +1211,17 @@ with tab2:
 
         st.metric(
             "Overall Priority",
-            f"{row['Priority /10']:.1f}/10",
-            level
+            f"{row['Priority /10']:.1f}/10"
+        )
+
+
+        st.write(
+            f"**Priority Level:** {level}"
         )
 
 
         st.metric(
-            "Peak Runoff",
+            "Estimated Peak Runoff",
             f"{row['Runoff Q']:.4f} m³/s"
         )
 
@@ -704,7 +1260,8 @@ with tab2:
     else:
 
         st.write(
-            "The priority results from the combined effect of the assessed factors."
+            "The priority results from the combined effect "
+            "of the assessed factors."
         )
 
 
@@ -717,7 +1274,9 @@ with tab2:
 
 
     st.success(
-        row["Proposed SuDS"]
+        str(
+            row["Proposed SuDS"]
+        )
     )
 
 
@@ -731,21 +1290,23 @@ with tab2:
 
 
     st.caption(
-        "The recommendation represents the preferred first-stage intervention "
-        "for the assessed site conditions."
+        "Preferred first-stage intervention for the assessed site conditions."
     )
 
 
+# =========================================================
 # PRIORITY SCHEDULE
+# =========================================================
 
-with tab3:
+with schedule:
 
     st.subheader(
         "Priority Schedule"
     )
 
 
-    schedule = (
+    schedule_df = (
+
         df[
             [
                 "Site Ref",
@@ -759,6 +1320,7 @@ with tab3:
                 "Proposed SuDS"
             ]
         ]
+
         .sort_values(
             "Priority /10",
             ascending=False
@@ -767,8 +1329,11 @@ with tab3:
 
 
     st.dataframe(
-        schedule,
+
+        schedule_df,
+
         use_container_width=True,
+
         hide_index=True
     )
 
@@ -781,25 +1346,37 @@ with tab3:
     )
 
 
-    intervention_count = (
-        df[
-            "Proposed SuDS"
-        ]
+    interventions = (
+
+        df["Proposed SuDS"]
+
         .value_counts()
+
         .reset_index()
     )
 
 
-    intervention_count.columns = [
+    interventions.columns = [
         "Intervention",
         "Locations"
     ]
 
 
+    interventions = (
+        interventions
+        .sort_values(
+            "Locations",
+            ascending=True
+        )
+    )
+
+
     intervention_fig = px.bar(
-        intervention_count,
+
+        interventions,
 
         x="Locations",
+
         y="Intervention",
 
         orientation="h"
@@ -807,8 +1384,11 @@ with tab3:
 
 
     intervention_fig.update_layout(
+
         xaxis_title="Number of locations",
+
         yaxis_title="",
+
         height=450
     )
 
@@ -819,9 +1399,11 @@ with tab3:
     )
 
 
+# =========================================================
 # ENGINEERING METHOD
+# =========================================================
 
-with tab4:
+with method:
 
     st.subheader(
         "Runoff Calculation"
@@ -834,9 +1416,13 @@ with tab4:
 
 
     st.write(
+
         "**Q** = peak runoff (m³/s)  |  "
+
         "**C** = runoff coefficient  |  "
+
         "**i** = rainfall intensity (mm/h)  |  "
+
         "**A** = catchment area (ha)"
     )
 
@@ -855,10 +1441,15 @@ with tab4:
 
 
     st.write(
+
         "**F** = Flood  |  "
+
         "**D** = Drainage  |  "
+
         "**E** = Population exposure  |  "
+
         "**L** = Land cover  |  "
+
         "**R** = Pollution"
     )
 
@@ -871,7 +1462,7 @@ with tab4:
     )
 
 
-    levels = pd.DataFrame(
+    priority_table = pd.DataFrame(
         {
             "Score": [
                 "8.0 - 10",
@@ -891,7 +1482,7 @@ with tab4:
 
 
     st.table(
-        levels
+        priority_table
     )
 
 
@@ -905,37 +1496,37 @@ with tab4:
 
     st.write(
         "• A consistent rainfall intensity is applied across the study area "
-        "so that locations can be compared on the same basis."
+        "so locations are compared under the same rainfall condition."
     )
 
 
     st.write(
-        "• Runoff coefficients reflect the relative degree of urbanisation "
+        "• Runoff coefficients reflect differences in urbanisation "
         "and impermeable land cover."
     )
 
 
     st.write(
-        "• Catchment areas are represented consistently to allow direct "
-        "comparison of peak runoff between locations."
+        "• The Rational Method is applied consistently using runoff "
+        "coefficient, rainfall intensity and contributing area."
     )
 
 
     st.write(
-        "• Pollution risk is expressed on a common 0–10 scale to compare "
-        "the relative urban-runoff concern between sites."
+        "• Pollution risk is expressed on a common 0–10 scale "
+        "to compare relative urban-runoff concern."
     )
 
 
     st.write(
-        "• SuDS recommendations use the combined flood, drainage, runoff, "
-        "land-cover and pollution characteristics of each location."
+        "• SuDS recommendations consider flood risk, drainage, runoff "
+        "potential, land cover and pollution risk."
     )
 
 
     st.write(
-        "• Priority is based on several indicators rather than a single "
-        "risk factor."
+        "• Priority is determined from several indicators rather "
+        "than flood risk alone."
     )
 
 
@@ -954,7 +1545,7 @@ with tab4:
 
 
     st.write(
-        "• Birmingham flood-risk information is used as an additional "
+        "• Birmingham flood-risk information provides an additional "
         "check on the ranking."
     )
 
@@ -965,6 +1556,6 @@ with tab4:
 
 
     st.write(
-        "• Priority weighting can be varied to test whether the "
-        "highest-ranked locations remain stable."
+        "• Priority weighting can be varied to confirm that the "
+        "highest-ranked locations remain reasonably stable."
     )
